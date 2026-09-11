@@ -299,16 +299,16 @@ export default function GameView({ mode, loadout, settings, setSettings, partyCo
       {/* ── HUD ── */}
       {hud && !result && (
         <div className="hud-layer absolute inset-0" style={{ zIndex: 22 }}>
-          {/* crosshair */}
+          {/* dynamic crosshair */}
           {!hud.scoped && (
-            <div className="crosshair">
+            <div className="crosshair" style={{ transform: `translate(-50%,-50%) scale(${1 + hud.crosshairSpread * 0.6})` }}>
               {loadout.crosshair === "dot" && <div className="h-1.5 w-1.5 rounded-full bg-cyan-300 shadow-[0_0_6px_#22d3ee]" />}
               {loadout.crosshair === "cross" && (
                 <div className="relative h-8 w-8">
-                  <div className="absolute left-1/2 top-0 h-2.5 w-0.5 -translate-x-1/2 bg-cyan-300 shadow-[0_0_6px_#22d3ee]" />
-                  <div className="absolute bottom-0 left-1/2 h-2.5 w-0.5 -translate-x-1/2 bg-cyan-300 shadow-[0_0_6px_#22d3ee]" />
-                  <div className="absolute left-0 top-1/2 h-0.5 w-2.5 -translate-y-1/2 bg-cyan-300 shadow-[0_0_6px_#22d3ee]" />
-                  <div className="absolute right-0 top-1/2 h-0.5 w-2.5 -translate-y-1/2 bg-cyan-300 shadow-[0_0_6px_#22d3ee]" />
+                  <div className="absolute left-1/2 top-0 h-2.5 w-0.5 -translate-x-1/2 bg-cyan-300 shadow-[0_0_6px_#22d3ee]" style={{ marginTop: `${hud.crosshairSpread * 6}px` }} />
+                  <div className="absolute bottom-0 left-1/2 h-2.5 w-0.5 -translate-x-1/2 bg-cyan-300 shadow-[0_0_6px_#22d3ee]" style={{ marginBottom: `${hud.crosshairSpread * 6}px` }} />
+                  <div className="absolute left-0 top-1/2 h-0.5 w-2.5 -translate-y-1/2 bg-cyan-300 shadow-[0_0_6px_#22d3ee]" style={{ marginLeft: `-${hud.crosshairSpread * 6}px` }} />
+                  <div className="absolute right-0 top-1/2 h-0.5 w-2.5 -translate-y-1/2 bg-cyan-300 shadow-[0_0_6px_#22d3ee]" style={{ marginRight: `-${hud.crosshairSpread * 6}px` }} />
                   <div className="absolute left-1/2 top-1/2 h-1 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white" />
                 </div>
               )}
@@ -316,6 +316,19 @@ export default function GameView({ mode, loadout, settings, setSettings, partyCo
               {loadout.crosshair === "chevron" && <div className="text-2xl font-black text-cyan-300" style={{ textShadow: "0 0 8px #22d3ee" }}>⌄</div>}
             </div>
           )}
+
+          {/* Minimap */}
+          <div className="minimap">
+            <div className="absolute inset-2 rounded-full bg-black/50" />
+            <div className="absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-cyan-300 shadow-[0_0_6px_#22d3ee]" />
+            <div className="absolute left-1/2 top-1/2 h-2 w-0.5 origin-bottom -translate-x-1/2 -translate-y-full bg-cyan-300" style={{ transform: `translate(-50%,-100%) rotate(0deg)` }} id="mm-arrow" />
+          </div>
+
+          {/* Dash indicator */}
+          <div className="dash-indicator">
+            <div className="dash-bar" style={{ transform: `scaleX(${Math.max(0, 1 - hud.dashCd / 1.8)})` }} />
+            <div className="text-[9px] font-bold tracking-widest text-slate-400">DASH [C]</div>
+          </div>
           {/* hitmarker */}
           <div className={`hitmarker h-8 w-8 ${hud.hitmarker > 0.2 ? "show" : ""}`}>
             <div className="absolute left-1/2 top-1/2 h-8 w-1 -translate-x-1/2 -translate-y-1/2 bg-white shadow-[0_0_8px_#fff]" />
@@ -404,7 +417,7 @@ export default function GameView({ mode, loadout, settings, setSettings, partyCo
             <div className="h-3 overflow-hidden rounded-full bg-black/70">
               <div className={`h-full rounded-full transition-all ${hud.hp > 60 ? "bg-gradient-to-r from-cyan-500 to-cyan-300" : hud.hp > 30 ? "bg-gradient-to-r from-yellow-500 to-yellow-300" : "bg-gradient-to-r from-red-600 to-red-400"}`} style={{ width: `${(hud.hp / hud.maxHp) * 100}%` }} />
             </div>
-            {!isMobile && <div className="mt-1 text-[10px] text-slate-500">[R] reload · [Q] swap · [P] pause</div>}
+            {!isMobile && <div className="mt-1 text-[10px] text-slate-500">[R] reload · [Q] swap · [C] dash · [Shift] sprint · double-jump · [V] bash · [P] pause</div>}
           </div>
 
           {/* bottom-right weapon */}

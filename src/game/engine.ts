@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { WEAPONS, type ArenaId, type GameModeId, type WeaponId } from "./constants";
-import { buildArena, buildDrone, buildGunMesh, buildHumanoid, buildJuggernaut, buildOrb, buildTarget, animateHumanoid, type ArenaBuild, type Boss, type Drone, type Humanoid } from "./models";
+import { buildArena, buildArms, buildDrone, buildGunMesh, buildHumanoid, buildJuggernaut, buildOrb, buildTarget, buildPickup, buildShell, buildBulletHole, animateHumanoid, type ArenaBuild, type Boss, type Drone, type Humanoid } from "./models";
 import { ParticleSystem, DamageNumbers } from "./particles";
 import { sfx } from "./audio";
 
@@ -12,6 +12,7 @@ export interface HUDState {
   hitmarker: number; headshot: boolean; scoped: boolean; fps: number;
   killfeed: { text: string; t: number }[]; banner: string; bannerT: number;
   combo: number; comboT: number; lowAmmo: boolean; interact: string;
+  crosshairSpread: number; dashCd: number;
 }
 export interface GameResult { score: number; kills: number; deaths: number; shots: number; hits: number; wave: number; win: boolean; mode: GameModeId; timeSurvived: number; }
 export interface RemoteState { playerId: string; name: string; skin: string; weapon: string; x: number; y: number; z: number; rotY: number; pitch: number; health: number; alive: number; score: number; kills: number; }
@@ -33,6 +34,9 @@ interface OrbE { g: THREE.Group; taken: boolean; pos: THREE.Vector3; spin: numbe
 interface Proj { mesh: THREE.Mesh; vel: THREE.Vector3; life: number; fromPlayer: boolean; dmg: number }
 interface Tracer { line: THREE.Line; life: number; max: number }
 interface FloatText { x: number; y: number }
+interface Pickup { group: THREE.Group; kind: "health" | "ammo"; pos: THREE.Vector3; taken: boolean; bob: number }
+interface Shell { mesh: THREE.Mesh; vel: THREE.Vector3; life: number; angVel: THREE.Vector3 }
+interface Hole { mesh: THREE.Mesh; life: number }
 
 const BOT_NAMES = ["VEX", "NOVA", "RUIN", "JOLT", "HEX", "MIRO", "KAYO", "DRIFT"];
 const BOT_COLORS = [0xef4444, 0xf97316, 0xeab308, 0x22c55e, 0x3b82f6, 0xa855f7, 0xec4899, 0x14b8a6];
@@ -70,9 +74,19 @@ export class GameEngine {
 
   // viewmodel
   gunGroup = new THREE.Group();
+  armsGroup = new THREE.Group();
   gunMesh: THREE.Group | null = null;
+  arms: { handL: THREE.Group; handR: THREE.Group } | null = null;
+  baseFov = 78;
+  fovTarget = 78;
+  jumpsLeft = 2;
+  dashCd = 0;
+  dashT = 0;
+  crosshairSpread = 0;
+  spaceHeld = false;
   muzzleLight: THREE.PointLight;
   muzzleFlash: THREE.Mesh;
+  muzzleCone: THREE.Mesh;
   gunKick = 0; gunSwap = 0; reloadAnim = 0; bladeSwing = 0;
   bobT = 0;
 
@@ -85,6 +99,9 @@ export class GameEngine {
   bossHp = 0; bossMax = 1;
   projs: Proj[] = [];
   tracers: Tracer[] = [];
+  pickups: Pickup[] = [];
+  shells: Shell[] = [];
+  holes: Hole[] = [];
   remotes = new Map<string, Bot>();
   enemyShots: Proj[] = [];
 
@@ -129,18 +146,25 @@ export class GameEngine {
     this.renderer.setPixelRatio(pr);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
+    this.renderer.toneMappingExposure = 1.1;
 
-    this.camera = new THREE.PerspectiveCamera(opts.fov, container.clientWidth / container.clientHeight, 0.05, 400);
+    this.baseFov = opts.fov;
+    this.fovTarget = opts.fov;
+    this.camera = new THREE.PerspectiveCamera(opts.fov, container.clientWidth / container.clientHeight, 0.05, 500);
     this.camera.rotation.order = "YXZ";
 
     this.muzzleLight = new THREE.PointLight(0x67e8f9, 0, 12, 2);
     this.scene.add(this.muzzleLight);
     this.muzzleFlash = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.5, 0.5),
-      new THREE.MeshBasicMaterial({ color: 0xaef3ff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide })
+      new THREE.SphereGeometry(0.25, 10, 8),
+      new THREE.MeshBasicMaterial({ color: 0xaef3ff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false })
     );
     this.scene.add(this.muzzleFlash);
+    this.muzzleCone = new THREE.Mesh(
+      new THREE.ConeGeometry(0.15, 0.55, 10),
+      new THREE.MeshBasicMaterial({ color: 0xd4f5ff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false })
+    );
+    this.scene.add(this.muzzleCone);
 
     // lights
     this.scene.add(new THREE.HemisphereLight(0x8ab4ff, 0x1a0f2e, 0.9));
@@ -151,14 +175,16 @@ export class GameEngine {
     accent.position.set(0, 8, 0);
     this.scene.add(accent);
 
-    this.particles = new ParticleSystem(this.scene, opts.isMobile ? 700 : 1200);
+    this.particles = new ParticleSystem(this.scene, opts.isMobile ? 700 : 1400);
     this.dmgNums.init(container);
     this.buildWorld();
     this.setupTracers();
     this.attachGun();
+    this.attachArms();
     this.bindInput();
     this.resetForMode();
     this.camera.add(this.gunGroup);
+    this.camera.add(this.armsGroup);
     this.scene.add(this.camera);
     this.started = true;
   }
@@ -173,16 +199,31 @@ export class GameEngine {
     const s = this.arena.spawns[0];
     this.pos.set(s.x, 1.7, s.z);
     this.yaw = Math.atan2(-s.x, -s.z);
+    this.spawnInitialPickups();
+  }
+  spawnInitialPickups() {
+    const positions: [number, number, "health" | "ammo"][] = [
+      [-8, -8, "health"], [8, -8, "ammo"], [-8, 8, "ammo"], [8, 8, "health"],
+      [0, -20, "health"], [0, 20, "ammo"], [-20, 0, "ammo"], [20, 0, "health"],
+      [0, 0, "health"],
+    ];
+    for (const [x, z, kind] of positions) this.spawnPickup(x, z, kind);
+  }
+  spawnPickup(x: number, z: number, kind: "health" | "ammo") {
+    const group = buildPickup(kind);
+    group.position.set(x, 0, z);
+    this.scene.add(group);
+    this.pickups.push({ group, kind, pos: new THREE.Vector3(x, 0, z), taken: false, bob: Math.random() * Math.PI * 2 });
   }
 
   setupTracers() {
-    for (let i = 0; i < 24; i++) {
+    for (let i = 0; i < 48; i++) {
       const g = new THREE.BufferGeometry();
       g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(6), 3));
       const l = new THREE.Line(g, new THREE.LineBasicMaterial({ color: 0x67e8f9, transparent: true, opacity: 0, blending: THREE.AdditiveBlending }));
       l.frustumCulled = false;
       this.scene.add(l);
-      this.tracers.push({ line: l, life: 1, max: 0.09 });
+      this.tracers.push({ line: l, life: 1, max: 0.12 });
     }
   }
   fireTracer(a: THREE.Vector3, b: THREE.Vector3, color = 0x67e8f9) {
@@ -202,6 +243,13 @@ export class GameEngine {
     this.gunMesh.rotation.set(0, 0.04, 0);
     this.gunGroup.add(this.gunMesh);
     this.gunGroup.position.set(0, 0, 0);
+  }
+  attachArms() {
+    const a = buildArms(this.opts.suitColor, this.opts.suitGlow);
+    this.armsGroup.clear();
+    this.armsGroup.add(a.group);
+    this.armsGroup.position.set(0, 0, 0);
+    this.arms = a;
   }
 
   resetForMode() {
@@ -312,6 +360,8 @@ export class GameEngine {
     if (e.code === "Digit2") this.switchTo(this.weapon2);
     if (e.code === "KeyQ") this.switchTo(this.weapon === this.weapon2 ? this.weapon : this.weapon2);
     if (e.code === "KeyF") this.cycleWeapon();
+    if (e.code === "KeyC" || e.code === "ControlLeft" || e.code === "ControlRight") this.tryDash();
+    if (e.code === "KeyV") this.meleeQuick();
   };
   onKeyUp = (e: KeyboardEvent) => { this.keys.delete(e.code); };
   onMouseDown = (e: MouseEvent) => {
@@ -381,6 +431,76 @@ export class GameEngine {
     sfx.reload();
   }
 
+  tryDash() {
+    if (this.dashCd > 0 || this.dead || this.paused || this.gameEnded) return;
+    this.dashCd = 1.8;
+    this.dashT = 0.22;
+    // give a speed burst in look direction (horizontal)
+    const fwd = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
+    const wish = new THREE.Vector3();
+    if (this.keys.has("KeyW") || this.keys.has("ArrowUp")) wish.add(fwd);
+    if (this.keys.has("KeyS") || this.keys.has("ArrowDown")) wish.sub(fwd);
+    const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+    if (this.keys.has("KeyD") || this.keys.has("ArrowRight")) wish.add(right);
+    if (this.keys.has("KeyA") || this.keys.has("ArrowLeft")) wish.sub(right);
+    if (wish.lengthSq() < 0.01) wish.copy(fwd);
+    wish.normalize().multiplyScalar(18);
+    this.vel.x = wish.x; this.vel.z = wish.z;
+    this.addShake(0.35);
+    if (this.opts.particles) {
+      this.particles.spawn(this.pos.x, this.pos.y - 0.4, this.pos.z, 22, 0x67e8f9, { speed: 8, life: 0.5, grav: 0, drag: 2, up: 1 });
+    }
+    sfx.scope();
+  }
+  meleeQuick() {
+    if (this.weapon === "blade") return;
+    // quick bash: switch to blade isn't possible without losing loadout, so fire a short-range hit
+    // reuse meleeHit logic with a small knife
+    const fwd = new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(this.pitch, this.yaw, 0, "YXZ"));
+    const src = this.pos.clone();
+    let best: { d: number; kind: string; bot?: Bot; drone?: DroneE } | null = null;
+    for (const b of this.bots) {
+      if (!b.alive) continue;
+      const bp = b.h.group.position.clone().setY(1.2);
+      const to = bp.clone().sub(src); const dist = to.length();
+      if (dist > 2.8) continue;
+      to.normalize(); if (to.dot(fwd) < 0.5) continue;
+      if (!best || dist < best.d) best = { d: dist, kind: "bot", bot: b };
+    }
+    if (best?.bot) {
+      const bp = best.bot.h.group.position.clone().setY(1.2);
+      this.damageBot(best.bot, 30, false, bp);
+      if (this.opts.particles) this.particles.burst(bp, 0xfacc15, 14, 6);
+      sfx.hit();
+    }
+  }
+  spawnShell() {
+    if (this.shells.length > 60) return; // cap
+    const m = buildShell();
+    this.muzzleWorld(this.tmpV);
+    m.position.copy(this.tmpV);
+    m.position.x += 0.08;
+    const fwd = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
+    const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+    const up = new THREE.Vector3(0, 1, 0);
+    const v = new THREE.Vector3()
+      .addScaledVector(right, 2.5 + Math.random() * 1.2)
+      .addScaledVector(up, 3 + Math.random() * 1.5)
+      .addScaledVector(fwd, -1 + Math.random() * 1.5);
+    this.scene.add(m);
+    this.shells.push({ mesh: m, vel: v, life: 2.5, angVel: new THREE.Vector3(Math.random() * 20 - 10, Math.random() * 20 - 10, Math.random() * 20 - 10) });
+  }
+  spawnHole(point: THREE.Vector3, normal: THREE.Vector3) {
+    if (this.holes.length > 40) {
+      const old = this.holes.shift();
+      if (old) this.scene.remove(old.mesh);
+    }
+    const m = buildBulletHole();
+    m.position.copy(point).addScaledVector(normal, 0.01);
+    m.lookAt(point.clone().add(normal));
+    this.scene.add(m);
+    this.holes.push({ mesh: m, life: 12 });
+  }
   addShake(amt: number) {
     if (!this.opts.shake) return;
     this.shakeAmp = Math.min(1.2, this.shakeAmp + amt);
@@ -412,12 +532,24 @@ export class GameEngine {
     this.muzzleWorld(this.tmpV);
     this.muzzleLight.position.copy(this.tmpV);
     this.muzzleLight.color.set(def.color);
-    this.muzzleLight.intensity = def.id === "scatter" ? 90 : 50;
+    this.muzzleLight.intensity = def.id === "scatter" ? 90 : def.id === "thumper" ? 70 : 50;
     this.muzzleFlash.position.copy(this.tmpV);
     this.muzzleFlash.rotation.set(Math.random() * 3, Math.random() * 3, 0);
     (this.muzzleFlash.material as THREE.MeshBasicMaterial).opacity = 0.95;
     const sc = def.id === "scatter" ? 1.6 : def.id === "rail" ? 1.4 : 0.9;
     this.muzzleFlash.scale.set(sc, sc, sc);
+    // muzzle cone pointing forward
+    this.muzzleCone.position.copy(this.tmpV);
+    const fwdDir = new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(this.pitch, this.yaw, 0, "YXZ"));
+    this.muzzleCone.lookAt(this.tmpV.clone().add(fwdDir));
+    this.muzzleCone.rotateX(Math.PI / 2);
+    (this.muzzleCone.material as THREE.MeshBasicMaterial).color.setHex(def.color);
+    (this.muzzleCone.material as THREE.MeshBasicMaterial).opacity = 0.8;
+    this.muzzleCone.scale.setScalar(sc * 0.9);
+    // shell ejection (not for blade/rail/thumper)
+    if (!def.melee && !def.projectile && def.id !== "rail") this.spawnShell();
+    // crosshair jump
+    this.crosshairSpread = Math.min(1, this.crosshairSpread + def.kick * 0.12);
     this.gunKick = Math.min(1.4, this.gunKick + def.kick * 0.35);
     this.addShake(def.kick * 0.12);
     if (this.opts.particles) this.particles.muzzle(this.tmpV, def.color);
@@ -470,7 +602,7 @@ export class GameEngine {
     }
     for (const t of this.targets) {
       if (!t.alive) continue;
-      reg(t.g.children[1], { kind: "target", target: t, head: false });
+      reg(t.g, { kind: "target", target: t, head: false });
     }
     // walls + floor as blockers
     reg(this.arena.group, { kind: "wall", head: false });
@@ -491,6 +623,10 @@ export class GameEngine {
     const { data, point } = hit;
     if (data.kind === "wall") {
       if (this.opts.particles) { this.particles.sparks(point, 0x94a3b8, 6); this.particles.burst(point, 0x475569, 6, 4); }
+      // bullet hole (approx normal from point to player)
+      const n = point.clone().sub(this.pos); n.y = 0;
+      if (n.lengthSq() > 0.001) n.normalize(); else n.set(0, 1, 0);
+      this.spawnHole(point, n);
       return;
     }
     this.hits++;
@@ -1164,7 +1300,98 @@ export class GameEngine {
     this.centerSpin += rawDt;
     const ob = this.arena.centerProp.getObjectByName("obelisk");
     if (ob) { ob.rotation.y = this.centerSpin * 0.8; ob.position.y = 4.2 + Math.sin(t * 1.4) * 0.35; }
+    const obHalo = this.arena.centerProp.getObjectByName("obHalo");
+    if (obHalo) obHalo.rotation.z = this.centerSpin * 1.3;
+    const r1 = this.arena.centerProp.getObjectByName("r1");
+    if (r1) r1.rotation.z = this.centerSpin * 0.6;
+    const r2 = this.arena.centerProp.getObjectByName("r2");
+    if (r2) { r2.rotation.z = -this.centerSpin * 0.4; r2.rotation.x = Math.PI / 3 + Math.sin(t * 0.8) * 0.1; }
+    // reactor light pulse
+    this.arena.reactorLight.intensity = 70 + Math.sin(t * 2) * 30;
     this.particles.update(rawDt);
+
+    // shells
+    for (let i = this.shells.length - 1; i >= 0; i--) {
+      const s = this.shells[i];
+      s.life -= rawDt;
+      s.vel.y -= 12 * rawDt;
+      s.mesh.position.addScaledVector(s.vel, rawDt);
+      s.mesh.rotation.x += s.angVel.x * rawDt;
+      s.mesh.rotation.y += s.angVel.y * rawDt;
+      s.mesh.rotation.z += s.angVel.z * rawDt;
+      if (s.mesh.position.y <= 0.05) { s.mesh.position.y = 0.05; s.vel.set(0,0,0); s.angVel.multiplyScalar(0.2); }
+      if (s.life <= 0) {
+        this.scene.remove(s.mesh);
+        this.shells.splice(i, 1);
+      }
+    }
+    // holes fade
+    for (let i = this.holes.length - 1; i >= 0; i--) {
+      const h = this.holes[i];
+      h.life -= rawDt;
+      const mat = h.mesh.material as THREE.MeshBasicMaterial;
+      mat.opacity = Math.max(0, Math.min(0.85, h.life / 12 * 0.85));
+      if (h.life <= 0) { this.scene.remove(h.mesh); this.holes.splice(i, 1); }
+    }
+    // drone inner rings & thrusters
+    for (const e of this.drones) {
+      const r2d = e.d.group.getObjectByName("ring2") as THREE.Mesh | undefined;
+      if (r2d) r2d.rotation.z += rawDt * 4;
+      const pulse = 0.6 + Math.sin(t * 10) * 0.4;
+      (e.d.thrusterL.material as THREE.MeshStandardMaterial).emissiveIntensity = 2.2 + pulse;
+      (e.d.thrusterR.material as THREE.MeshStandardMaterial).emissiveIntensity = 2.2 + pulse;
+      e.d.thrusterL.scale.y = 1 + Math.sin(t * 12) * 0.4;
+      e.d.thrusterR.scale.y = 1 + Math.sin(t * 12 + 1) * 0.4;
+    }
+    // boss spin core rings + exhaust plume flicker
+    if (this.boss) {
+      const cs = this.boss.group.getObjectByName("coreSpin");
+      if (cs) cs.rotation.z += rawDt * 3;
+      this.boss.group.traverse((o) => {
+        if (o.name === "plume") {
+          (o as THREE.Mesh).scale.y = 1 + Math.sin(t * 18) * 0.3;
+          const mm = (o as THREE.Mesh).material as THREE.MeshStandardMaterial;
+          mm.emissiveIntensity = 1.2 + Math.random() * 0.6;
+        }
+      });
+      // boss HP bar billboard + color
+      const pct = Math.max(0, this.bossHp / this.bossMax);
+      this.boss.hpBar.fill.scale.x = Math.max(0.01, pct);
+      this.boss.hpBar.fill.position.x = -(1 - pct) * 0.55; // left-align fill
+      const fillMat = this.boss.hpBar.fill.material as THREE.MeshBasicMaterial;
+      fillMat.color.setHex(pct > 0.5 ? 0xf472b6 : pct > 0.25 ? 0xfacc15 : 0xef4444);
+    }
+
+    // bot/remote health bars: billboard to camera + update
+    const updateHpBar = (bar: Humanoid["hpBar"], hp: number, maxHp: number) => {
+      const pct = Math.max(0, hp / maxHp);
+      bar.group.quaternion.copy(this.camera.quaternion);
+      bar.fill.scale.x = Math.max(0.01, pct) * 1.1;
+      bar.fill.position.x = -(1 - pct) * 0.55;
+      const fm = bar.fill.material as THREE.MeshBasicMaterial;
+      if (pct > 0.6) fm.color.setHex(0x22d3ee);
+      else if (pct > 0.3) fm.color.setHex(0xfacc15);
+      else fm.color.setHex(0xef4444);
+      bar.group.visible = pct < 0.99;
+    };
+    for (const b of this.bots) if (b.alive) updateHpBar(b.h.hpBar, b.hp, b.maxHp);
+    for (const [, b] of this.remotes) if (b.alive) updateHpBar(b.h.hpBar, b.hp, b.maxHp);
+    // arms animation: gentle sway, move with gun
+    if (this.arms) {
+      const bob = Math.sin(this.bobT) * 0.012 * Math.min(1, Math.hypot(this.vel.x, this.vel.z) / 6);
+      this.armsGroup.position.y = -bob * 0.7;
+      this.armsGroup.position.x = Math.sin(t * 1.3) * 0.003;
+      // Right hand follows gun kick
+      this.arms.handR.position.x = 0.18 - this.gunKick * 0.04;
+      this.arms.handR.position.z = -0.42 + this.gunKick * 0.1;
+      this.arms.handR.rotation.x = -this.gunKick * 0.25;
+      this.arms.handL.position.x = -0.18;
+      this.arms.handL.position.z = -0.42;
+      // hide hands when scoped
+      this.armsGroup.visible = !this.scoped;
+    }
+    // crosshair spread decay
+    this.crosshairSpread = Math.max(0, this.crosshairSpread - rawDt * 2.5);
     for (const tr of this.tracers) {
       if (tr.life < tr.max) {
         tr.life += rawDt;
@@ -1208,8 +1435,6 @@ export class GameEngine {
       }
       return;
     }
-    const speedBase = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight") ? 8.4 : 5.6;
-    const speed = this.scoped ? speedBase * 0.45 : this.aiming ? speedBase * 0.7 : speedBase;
     const fwd = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
     const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
     const wish = new THREE.Vector3();
@@ -1220,6 +1445,16 @@ export class GameEngine {
     wish.addScaledVector(fwd, -this.touchMove.y);
     wish.addScaledVector(right, this.touchMove.x);
     if (wish.lengthSq() > 1) wish.normalize();
+    const sprinting = (this.keys.has("ShiftLeft") || this.keys.has("ShiftRight")) && !this.aiming && !this.scoped && wish.lengthSq() > 0.01;
+    const speedBase = sprinting ? 9.4 : 5.8;
+    let speed = this.scoped ? speedBase * 0.45 : this.aiming ? speedBase * 0.7 : speedBase;
+    if (this.dashT > 0) speed = 20;
+    // FOV kick (only when not scoped; scope handled below)
+    if (!this.scoped) {
+      const wantFov = this.baseFov + (sprinting ? 6 : 0) + (this.dashT > 0 ? 14 : 0);
+      this.camera.fov += (wantFov - this.camera.fov) * Math.min(1, dt * 8);
+      this.camera.updateProjectionMatrix();
+    }
     const accel = this.onGround ? 42 : 12;
     this.vel.x += wish.x * accel * dt;
     this.vel.z += wish.z * accel * dt;
@@ -1228,13 +1463,83 @@ export class GameEngine {
     if (wish.lengthSq() < 0.01) { this.vel.x *= fr; this.vel.z *= fr; }
     const hs = Math.hypot(this.vel.x, this.vel.z);
     if (hs > speed) { this.vel.x *= speed / hs; this.vel.z *= speed / hs; }
-    if ((this.keys.has("Space")) && this.onGround) { this.vel.y = 7.4; this.onGround = false; sfx.jump(); }
+    if (this.keys.has("Space") && !this.spaceHeld && (this.onGround || this.jumpsLeft > 0)) {
+      this.vel.y = this.onGround ? 8.2 : 7.2;
+      this.onGround = false;
+      if (this.onGround) this.jumpsLeft = 1; else { this.jumpsLeft--; if (this.opts.particles) this.particles.burst(this.pos.clone().setY(0.3), 0x67e8f9, 16, 5); }
+      sfx.jump();
+    }
+    this.spaceHeld = this.keys.has("Space");
     this.vel.y -= 20 * dt;
     this.pos.x += this.vel.x * dt;
     this.pos.z += this.vel.z * dt;
     this.pos.y += this.vel.y * dt;
-    if (this.pos.y <= 1.7) { this.pos.y = 1.7; this.vel.y = 0; this.onGround = true; }
+    if (this.pos.y <= 1.7) {
+      if (!this.onGround && this.vel.y < -4) this.addShake(0.1);
+      this.pos.y = 1.7; this.vel.y = 0; this.onGround = true; this.jumpsLeft = 2;
+    }
     this.collide(this.pos, 0.55);
+
+    // jump pads (corner launchers)
+    for (const jp of this.arena.jumpPads) {
+      const dx = this.pos.x - jp.pos.x, dz = this.pos.z - jp.pos.z;
+      if (dx * dx + dz * dz < 2.2 * 2.2 && this.onGround) {
+        this.vel.y = 14.5;
+        this.onGround = false;
+        this.jumpsLeft = 1;
+        this.addShake(0.25);
+        if (this.opts.particles) this.particles.burst(jp.pos.clone().setY(0.4), 0x4ade80, 24, 7);
+        sfx.jump();
+      }
+      // subtle spin
+      jp.mesh.rotation.y += dt * 2;
+    }
+
+    // pickups
+    for (const p of this.pickups) {
+      if (p.taken) continue;
+      p.bob += dt * 2;
+      const icon = p.group.getObjectByName("icon");
+      if (icon) icon.rotation.y += dt * 1.8;
+      p.group.position.y = Math.sin(p.bob) * 0.2;
+      const dx = this.pos.x - p.pos.x, dz = this.pos.z - p.pos.z;
+      if (dx * dx + dz * dz < 1.8 * 1.8) {
+        p.taken = true;
+        if (p.kind === "health") {
+          this.hp = Math.min(this.maxHp, this.hp + 40);
+          sfx.pickup(); this.pushFeed("+40 HEALTH");
+          if (this.opts.particles) this.particles.burst(p.group.position.clone().setY(1), 0x22d3ee, 26, 7);
+        } else {
+          // ammo: top up reserves + mag
+          for (const w of Object.keys(WEAPONS)) {
+            const def = WEAPONS[w as WeaponId];
+            if (def.mag > 0) this.reserve[w] = Math.min(def.reserve * 2, this.reserve[w] + def.mag * 2);
+          }
+          this.ammo[this.weapon] = WEAPONS[this.weapon].mag;
+          sfx.pickup(); this.pushFeed("AMMO REFILL");
+          if (this.opts.particles) this.particles.burst(p.group.position.clone().setY(1), 0xfacc15, 26, 7);
+        }
+        this.scene.remove(p.group);
+        // respawn after 10s
+        window.setTimeout(() => {
+          if (this.disposed) return;
+          const kind = p.kind;
+          const x = p.pos.x, z = p.pos.z;
+          // find existing entry, reset
+          p.taken = false;
+          const g = buildPickup(kind);
+          g.position.set(x, 0, z);
+          this.scene.add(g);
+          p.group = g;
+          p.bob = 0;
+        }, 10000);
+      }
+    }
+
+    // dash cd
+    if (this.dashCd > 0) this.dashCd -= dt;
+    if (this.dashT > 0) { this.dashT -= dt; this.vel.x *= 0.93; this.vel.z *= 0.93; }
+
     // footsteps
     if (hs > 2 && this.onGround) {
       this.bobT += dt * hs * 1.6;
@@ -1251,12 +1556,12 @@ export class GameEngine {
         this.reserve[this.weapon] -= take;
       }
     }
-    // scope
+    // scope (rail only)
     const wantScope = this.weapon === "rail" && this.aiming;
-    if (wantScope !== this.scoped) {
-      this.scoped = wantScope;
-      const def = WEAPONS[this.weapon];
-      this.camera.fov = wantScope ? this.opts.fov / def.zoom : this.opts.fov;
+    if (wantScope !== this.scoped) this.scoped = wantScope;
+    if (this.scoped) {
+      const targetFov = this.baseFov / WEAPONS[this.weapon].zoom;
+      this.camera.fov += (targetFov - this.camera.fov) * Math.min(1, dt * 12);
       this.camera.updateProjectionMatrix();
     }
     // regen (out of combat)
@@ -1335,7 +1640,7 @@ export class GameEngine {
       hitmarker: this.hitmarker, headshot: this.headshotMark, scoped: this.scoped, fps: this.fps,
       killfeed: [...this.killfeed], banner: this.bannerT > 0 ? this.banner : "", bannerT: this.bannerT,
       combo: this.combo, comboT: this.comboT, lowAmmo: def.mag > 0 && this.ammo[this.weapon] <= Math.ceil(def.mag * 0.25),
-      interact: this.interactMsg,
+      interact: this.interactMsg, crosshairSpread: this.crosshairSpread, dashCd: this.dashCd,
     });
   }
 

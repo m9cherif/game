@@ -70,6 +70,24 @@ body { overscroll-behavior: none; }
 @keyframes floaty { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
 .code-digit { width: 52px; height: 64px; font-size: 34px; font-weight: 900; text-align: center; background: rgba(15,23,42,.9); border: 2px solid rgba(124,58,237,.5); border-radius: 12px; color: #67e8f9; text-shadow: 0 0 12px rgba(34,211,238,.8); }
 .code-digit:focus { outline: none; border-color: #22d3ee; box-shadow: 0 0 16px rgba(34,211,238,.5); }
+.minimap {
+  position: absolute; top: 72px; left: 50%; transform: translateX(-50%);
+  width: 110px; height: 110px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(34,211,238,.18) 0%, rgba(124,58,237,.08) 60%, transparent 100%);
+  border: 1px solid rgba(34,211,238,.35);
+  box-shadow: 0 0 24px rgba(34,211,238,.15), inset 0 0 24px rgba(0,0,0,.5);
+  pointer-events: none;
+}
+.dash-indicator {
+  position: absolute; bottom: 70px; right: 14px;
+  width: 80px; text-align: center;
+}
+.dash-bar {
+  height: 4px; background: linear-gradient(90deg, #22d3ee, #a78bfa);
+  border-radius: 2px; box-shadow: 0 0 8px rgba(34,211,238,.5);
+  transform-origin: left; margin-bottom: 4px;
+}
 input[type="range"] { accent-color: #22d3ee; }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: rgba(15,23,42,.5); }
