@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
+
 import { db } from "@/db";
 import { partyEvents, partyPlayers } from "@/db/schema";
 import { eq, and, sql } from "drizzle-orm";
+import { handleApiError } from "@/lib/api-helpers";
+
+export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
   try {
@@ -40,6 +44,6 @@ export async function POST(req: Request) {
     await db.execute(sql`DELETE FROM party_events WHERE code = ${c} AND id NOT IN (SELECT id FROM party_events WHERE code = ${c} ORDER BY id DESC LIMIT 120)`);
     return NextResponse.json({ ok: true });
   } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : "event failed" }, { status: 500 });
+    return handleApiError(e, "event failed");
   }
 }

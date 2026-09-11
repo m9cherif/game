@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
+
 import { db } from "@/db";
 import { parties, partyPlayers, partyEvents } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import { handleApiError } from "@/lib/api-helpers";
+
+export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
   try {
@@ -17,6 +21,6 @@ export async function POST(req: Request) {
     await db.insert(partyEvents).values({ code: c, fromId: String(playerId), type: "start", payload: { at: Date.now() } });
     return NextResponse.json({ ok: true });
   } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : "start failed" }, { status: 500 });
+    return handleApiError(e, "start failed");
   }
 }

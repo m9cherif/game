@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
+
 import { db } from "@/db";
 import { parties, partyPlayers } from "@/db/schema";
+import { handleApiError } from "@/lib/api-helpers";
+
+export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
   try {
@@ -21,6 +25,6 @@ export async function POST(req: Request) {
     });
     return NextResponse.json({ code, playerId });
   } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : "create failed" }, { status: 500 });
+    return handleApiError(e, "create failed");
   }
 }

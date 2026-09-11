@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
+
 import { db } from "@/db";
 import { parties, partyPlayers, partyEvents } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
+import { handleApiError } from "@/lib/api-helpers";
+
+export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
   try {
@@ -15,6 +19,6 @@ export async function POST(req: Request) {
     }
     return NextResponse.json({ ok: true });
   } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : "leave failed" }, { status: 500 });
+    return handleApiError(e, "leave failed");
   }
 }

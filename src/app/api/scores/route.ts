@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { highScores } from "@/db/schema";
 import { desc } from "drizzle-orm";
+import { handleApiError } from "@/lib/api-helpers";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +11,10 @@ export async function GET() {
     const rows = await db.select().from(highScores).orderBy(desc(highScores.score)).limit(10);
     return NextResponse.json({ scores: rows });
   } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : "failed", scores: [] }, { status: 500 });
+    const err = handleApiError(e, "failed");
+    // Always include `scores` so clients don't crash on shape mismatch
+    const body = (await err.json()) as Record<string, unknown>;
+    return NextResponse.json({ ...body, scores: [] }, { status: err.status });
   }
 }
 
@@ -28,6 +32,6 @@ export async function POST(req: Request) {
     const rows = await db.select().from(highScores).orderBy(desc(highScores.score)).limit(10);
     return NextResponse.json({ scores: rows });
   } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : "failed" }, { status: 500 });
+    return handleApiError(e, "failed");
   }
 }

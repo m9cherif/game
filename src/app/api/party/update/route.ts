@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
+
 import { db } from "@/db";
 import { partyPlayers } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
+import { handleApiError } from "@/lib/api-helpers";
+
+export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
   try {
@@ -27,6 +31,6 @@ export async function POST(req: Request) {
       .where(and(eq(partyPlayers.code, code), eq(partyPlayers.playerId, playerId)));
     return NextResponse.json({ ok: true });
   } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : "update failed" }, { status: 500 });
+    return handleApiError(e, "update failed");
   }
 }
